@@ -1,0 +1,170 @@
+select  WeekOf = a.WeekOf
+                , a.charweek
+                , TotalPiecesPicked
+                , ZCartonsPicked
+                , NonZcartons
+                , NonZPcsPicked
+                , TotalCtnsIn
+                , SmallParcelCtnsIn
+                , PalletsIn
+                , NonPalletCtnsIn
+                , PutAway
+                , TitleInspected
+                , CtnsToRestock
+                , CtnsRestocked
+
+from
+
+ (select  WeekOf = isnull(o.WeekOf, u.Weekof)
+                                , o.charweek
+                                , TotalCtnsIn
+                                , SmallParcelCtnsIn
+                                , PalletsIn
+                                , NonPalletCtnsIn
+                                , ZCartonsPicked
+                                , NonZPcsPicked
+                                , TotalPiecesPicked
+                                , NonZcartons
+                                , PutAway
+                                , TitleInspected
+                                , CtnsToRestock
+                                , CtnsRestocked
+
+--Total pieces picked, not currently being used 
+
+                from  (select  WeekOf = min(convert(varchar(10), d.date, 101))
+                                                , charweek
+                                                , TotalPiecesPicked = sum(od.pickqty)
+                                from orderheader oh (nolock)
+                                join orderdetail od (nolock) on oh.orderid = od.orderid
+                                join dates d (nolock) on convert(varchar(10), d.date, 101) = convert(varchar(10), oh.pickstop, 101)
+                                where oh.status not in ('cls','don') and oh.storeid not like 'fg%'
+                                                and oh.pickuserid <> 'rollover'
+                                                and oh.ordertype <> 'INH'
+                                group by charweek
+
+--Z picks by week will determine restock drivers needed and z checkout users needed
+
+                                                ) o
+
+                full outer join (select  WeekOf = min(convert(varchar(10), d.date, 101))
+                                                , charweek
+                                                , ZCartonsPicked = count (distinct oh.orderid)
+                                from orderheader oh (nolock)
+                                join orderdetail od (nolock) on oh.orderid = od.orderid
+                                join dates d (nolock) on convert(varchar(10), d.date, 101) = convert(varchar(10), oh.pickstop, 101)
+                                where oh.status not in ('cls','don')  and oh.storeid not like 'fg%'
+                                and oh.shippingboxid = 'z'
+                                                and oh.pickuserid <> 'rollover'
+                                                and oh.ordertype <> 'INH'
+                                group by  charweek --Not Z orders picked will determine pickers and checkout users needed
+                                                ) p on o.charweek = p.charweek
+
+                full outer join (select  WeekOf = min(convert(varchar(10), d.date, 101))
+                                                , charweek
+                                                , NonZPcsPicked = sum(od.pickqty)
+                                                , NonZcartons = count (distinct oh.orderid)
+                                from orderheader oh (nolock)
+                                join orderdetail od (nolock) on oh.orderid = od.orderid
+                                join dates d (nolock) on convert(varchar(10), d.date, 101) = convert(varchar(10), oh.pickstop, 101)
+                                where oh.status not in ('cls','don')  and oh.storeid not like 'fg%'
+                                and oh.shippingboxid <> 'z'
+                                                and oh.pickuserid <> 'rollover'
+                                                and oh.ordertype <> 'INH'
+                                group by charweek
+                                                ) q on o.charweek = q.charweek
+
+--Total number of cartons received to determine receivers needed
+
+                full outer join (select  WeekOf = min(convert(varchar(10), d.date, 101))
+                                                , charweek
+                                                , TotalCtnsIn = sum(th.actualcartons)
+                                from trafficheader th  (nolock)
+                                join dates d (nolock) on convert(varchar(10), d.date, 101) = convert(varchar(10), th.actualdate, 101)
+                                group by charweek
+                                                )r on o.charweek = r.charweek
+
+--Number of small parcel inbound product arriving. Not currently used in calculations for EE needs
+
+                full outer join (select  WeekOf = min(convert(varchar(10), d.date, 101))
+                                                , charweek
+                                                , SmallParcelCtnsIn = sum(th.actualcartons)
+                                from trafficheader th  (nolock)
+                                join dates d (nolock) on convert(varchar(10), d.date, 101) = convert(varchar(10), th.actualdate, 101)
+                                where th.shipmenttype like 'smallparcel'
+                                group by charweek
+                                                )w on o.charweek = w.charweek
+
+--Number of cartons marked on appointment log to determine number of container unloaders needed
+
+                full outer join (select  WeekOf = min(convert(varchar(10), d.date, 101))
+                                                , charweek
+                                                , NonPalletCtnsIn = sum(th.actualcartons)
+                                from trafficheader th  (nolock)
+                                join dates d (nolock) on convert(varchar(10), d.date, 101) = convert(varchar(10), th.actualdate, 101)
+                                where th.shipmenttype like '%nonPalletized%'
+                                group by charweek
+                                                )u on o.charweek = u.charweek
+
+--Number of pallets in on the appointment log. Used to calculate receiving driver needs
+
+                full outer join (select  WeekOf = min(convert(varchar(10), d.date, 101))
+                                                , charweek
+                                                , PalletsIn = sum(th.actualpallets)
+                                from trafficheader th  (nolock)
+                                join dates d (nolock) on convert(varchar(10), d.date, 101) = convert(varchar(10), th.actualdate, 101)
+                                where th.shipmenttype <> 'smallparcel'
+                                group by charweek
+                                                )v on o.charweek = v.charweek
+
+--Number of unique NB overflow locs scanned to. Used to determine put away and transport driver needs
+
+                full outer join (select WeekOf = min(convert(varchar(10), d.date, 101))
+                                                , charweek
+                                                , PutAway = count ( toloc)
+                                from vendorcartonmovement vm(nolock)
+                                join dates d (nolock) on convert(varchar(10), d.date, 101) = convert(varchar(10), vm.movedate, 101)
+                                where  toloc  like 'n%'
+                                --and applicationid  like 'Putaway'
+                                group by charweek
+                                                ) oa on o.charweek = oa.charweek
+
+--Number of titles inspected to determine VC inspector needs
+
+                full outer join (select WeekOf = min(convert(varchar(10), d.date, 101))
+                                               , charweek
+                                                , TitleInspected = count (distinct productid)
+                                from vccheck v(nolock)
+                                join dates d (nolock) on convert(varchar(10), d.date, 101) = convert(varchar(10), v.createdate, 101)
+                                group by charweek
+                                                ) i on o.charweek = i.charweek
+
+--Number of regular restock cartons pulled to determine restock and restock transport drivers as well as behind bin restocker needs
+
+                full outer join (select WeekOf = min(convert(varchar(10), d.date, 101))
+                                                , charweek
+                                                , CtnsToRestock = SUM(OriginalQty) --not currently being used for calculations
+                                                , CtnsRestocked = SUM(RestockQty)
+                                from restockHISTORY z (nolock)
+                                join dates d (nolock) on convert(varchar(10), d.date, 101) = convert(varchar(10), z.createdate, 101)
+                                where PKID in (
+                                select MAX(pkid) from RestockHistory (nolock)
+                                        where historytype <> 'del'
+
+                        group by restockid)
+
+                                group by charweek
+
+                                                ) rs on o.charweek = rs.charweek
+
+
+
+) a
+
+ 
+
+where a.WeekOf <> ''
+
+                and a.weekof <> '01/01/1900'
+
+order by WeekOf
